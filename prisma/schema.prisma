@@ -1,0 +1,1939 @@
+// Prisma Schema — Cooperative Management System
+// Database: MySQL 8.0+ | Engine: InnoDB | Charset: utf8mb4_unicode_ci
+// Money: DECIMAL(15,2) — never FLOAT | UUIDs: String @default(uuid()) @db.Char(36)
+// Soft-delete / append-only: financial tables use status fields, never hard deletes
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+
+enum Gender {
+  m
+  f
+}
+
+enum MaritalStatus {
+  single
+  married
+  divorced
+  widowed
+}
+
+enum MemberStatus {
+  active
+  suspended
+  exited
+}
+
+enum SavingsType {
+  voluntary
+  regular
+  children
+  loan_saving
+  woman
+}
+
+enum TxnType {
+  deposit
+  withdrawal
+  interest
+}
+
+enum PaymentMethod {
+  cash
+  bank
+  mobile_money
+  transfer
+}
+
+enum LoanStatus {
+  pending
+  pending_approval
+  approved
+  active
+  rejected
+  closed
+  defaulted
+  written_off
+}
+
+enum LoanType {
+  emergency
+  regular
+  special
+}
+
+enum TermUnit {
+  day
+  week
+  month
+  annual
+}
+
+enum InterestCalcMode {
+  prorated
+  flat_term
+}
+
+enum NotificationChannel {
+  sms
+  email
+}
+
+enum NotificationStatus {
+  pending
+  sent
+  failed
+}
+
+// ─── Roles & Menus ────────────────────────────────────────────────────────────
+
+model Role {
+  id          String   @id @default(uuid()) @db.Char(36)
+  name        String   @unique @db.VarChar(100)
+  slug        String   @unique @db.VarChar(100)
+  description String?  @db.Text
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now()) @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @db.DateTime(3)
+
+  users       User[]
+  menus       RoleMenu[]
+  positions   HrPosition[]
+  movementsFrom HrEmployeeMovement[] @relation("MovementFromRole")
+  movementsTo   HrEmployeeMovement[] @relation("MovementToRole")
+
+  @@map("roles")
+}
+
+model Menu {
+  id          String   @id @default(uuid()) @db.Char(36)
+  slug        String   @unique @db.VarChar(100)
+  labelKey    String   @db.VarChar(100)
+  label       String?  @db.VarChar(100)
+  path        String?  @db.VarChar(200)
+  icon        String   @db.VarChar(50)
+  color       String   @db.VarChar(50)
+  bg          String   @db.VarChar(50)
+  parentId    String?  @db.Char(36)
+  order       Int      @default(0)
+  createdAt   DateTime @default(now()) @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @db.DateTime(3)
+
+  parent      Menu?      @relation("SubMenus", fields: [parentId], references: [id])
+  children    Menu[]     @relation("SubMenus")
+  roles       RoleMenu[]
+
+  @@map("menus")
+}
+
+model RoleMenu {
+  id        String   @id @default(uuid()) @db.Char(36)
+  roleId    String   @db.Char(36)
+  menuId    String   @db.Char(36)
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  menu      Menu     @relation(fields: [menuId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, menuId])
+  @@map("role_menus")
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+
+model User {
+  id                 String    @id @default(uuid()) @db.Char(36)
+  email              String    @unique @db.VarChar(200)
+  passwordHash       String    @db.VarChar(255)
+  fullName           String?   @db.VarChar(200)
+  phone              String?   @db.VarChar(50)
+  telegram           String?   @db.VarChar(100)
+  gender             Gender?
+  address            String?   @db.VarChar(500)
+  profilePictureUrl  String?   @db.LongText
+  roleId             String?   @db.Char(36)
+  menuPermissions    Json?
+  isActive           Boolean   @default(true)
+  mustChangePassword Boolean   @default(true)
+  failedAttempts     Int       @default(0)
+  lockedUntil        DateTime? @db.DateTime(3)
+
+  // Account Verification, 2FA & Cryptographic Keyphrase
+  isPhoneVerified     Boolean   @default(false)
+  isEmailVerified     Boolean   @default(false)
+  activationCode      String?   @db.VarChar(20)
+  activationExpiresAt DateTime? @db.DateTime(3)
+  verificationStatus  String    @default("active") @db.VarChar(50)
+  isTwoFactorEnabled  Boolean   @default(false)
+  twoFactorType       String?   @default("otp") @db.VarChar(50)
+  twoFactorSecret     String?   @db.VarChar(255)
+  securityKeyphrase   String?   @db.VarChar(500)
+  lastVerifiedAt      DateTime? @db.DateTime(3)
+  verifiedByUserId    String?   @db.Char(36)
+
+  // OpenID Connect (OIDC) & Enterprise SSO Federation (Keycloak / Temenos)
+  oidcSub             String?   @unique @db.VarChar(255)
+  idpProvider         String    @default("local") @db.VarChar(50)
+  isExternal          Boolean   @default(false)
+
+  createdAt          DateTime  @default(now()) @db.DateTime(3)
+  updatedAt          DateTime  @updatedAt @db.DateTime(3)
+
+  role               Role?          @relation(fields: [roleId], references: [id])
+  focalAgent         FocalAgent?
+  membersCreated     Member[]       @relation("MemberCreatedBy")
+  savingsTxns        SavingsTxn[]
+  repayments         Repayment[]
+  loansReviewed      Loan[]         @relation("LoanReviewedBy")
+  loansApproved      Loan[]         @relation("LoanApprovedBy")
+  refreshTokens      RefreshToken[]
+  auditLogs          AuditLog[]
+  shareTxnsRecorded   ShareTxn[]
+  collectionsReceived DailyCollection[]
+  collectionEntries   DailyCollectionEntry[] @relation("CollectionEntryRecordedBy")
+  branches            UserBranch[]
+  focalAgentsManaged  FocalAgent[]   @relation("CRMHeadFocalAgents")
+  systemAlerts        SystemAlert[]
+  hrEmployee          HrEmployee?
+  tills               Till[]
+  tillSessions        TillSession[]
+  transfersRequested  CashTransfer[] @relation("TransferRequestedBy")
+  transfersApproved   CashTransfer[] @relation("TransferApprovedBy")
+  transfersReceived   CashTransfer[] @relation("TransferReceivedBy")
+  variancesResolved   CashVariance[]
+  vaultChecks         VaultDailyCheck[]
+  memberProfile       Member?        @relation("MemberUserAccount")
+
+  @@map("users")
+}
+
+// ─── Branches ─────────────────────────────────────────────────────────────────
+
+model Branch {
+  id        String   @id @default(uuid()) @db.Char(36)
+  name      String   @db.VarChar(200)
+  code      String   @unique @db.VarChar(50)
+  address   String?  @db.VarChar(500)
+  phone     String?  @db.VarChar(30)
+  email     String?  @db.VarChar(200)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  users             UserBranch[]
+  members           Member[]
+  dailyCollections  DailyCollection[]
+  loans             Loan[]
+  savingsAccounts   SavingsAccount[]
+  shareAccounts     ShareAccount[]
+  savingsTxns       SavingsTxn[]
+  repayments        Repayment[]
+  collectionEntries DailyCollectionEntry[]
+  shareTxns         ShareTxn[]
+  employees         HrEmployee[]
+  organizationUnits HrOrganizationUnit[]
+  movementsFrom     HrEmployeeMovement[] @relation("MovementFromBranch")
+  movementsTo       HrEmployeeMovement[] @relation("MovementToBranch")
+  vaults            Vault[]
+  tills             Till[]
+  tillSessions      TillSession[]
+  cashTransfers     CashTransfer[]
+  vaultChecks       VaultDailyCheck[]
+
+  @@map("branches")
+}
+
+model UserBranch {
+  id        String   @id @default(uuid()) @db.Char(36)
+  userId    String   @db.Char(36)
+  branchId  String   @db.Char(36)
+  isPrimary Boolean  @default(false)
+  assignedAt DateTime @default(now()) @db.DateTime(3)
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, branchId])
+  @@map("user_branches")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Char(36)
+  userId    String   @db.Char(36)
+  token     String   @unique @db.VarChar(512)
+  expiresAt DateTime @db.DateTime(3)
+  revokedAt DateTime? @db.DateTime(3)
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ─── Focal Agents ─────────────────────────────────────────────────────────────
+
+model FocalAgent {
+  id        String  @id @default(uuid()) @db.Char(36)
+  userId    String  @unique @db.Char(36)
+  fullName  String  @db.VarChar(200)
+  phone     String  @db.VarChar(20)
+  region    String? @db.VarChar(100)
+  crmHeadId String? @db.Char(36)
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  user             User               @relation(fields: [userId], references: [id])
+  crmHead          User?              @relation("CRMHeadFocalAgents", fields: [crmHeadId], references: [id])
+  members          Member[]
+  savingsTxns      SavingsTxn[]
+  dailyCollections DailyCollection[]
+  shareTxns        ShareTxn[]
+  repayments       Repayment[]
+  collectionEntries DailyCollectionEntry[]
+
+  @@map("focal_agents")
+}
+
+// ─── Members ──────────────────────────────────────────────────────────────────
+
+model Member {
+  id              String       @id @default(uuid()) @db.Char(36)
+  memberCode      String       @unique @db.VarChar(20)
+  fullName        String       @db.VarChar(200)
+  phone           String       @unique @db.VarChar(20)
+  email           String?      @unique @db.VarChar(200)
+  nationalId      String?      @unique @db.VarChar(50)
+  address         String?      @db.VarChar(255)
+  gender          Gender?
+  dateOfBirth     DateTime?    @db.Date
+  qualification   String?      @db.VarChar(100)
+  maritalStatus   MaritalStatus?
+  familyMembers   Int?         @default(0)
+  birthPlace      String?      @db.VarChar(100)
+  focalAgentId    String?      @db.Char(36)
+  registrationFee Decimal      @default(0) @db.Decimal(15, 2)
+  joinDate        DateTime     @db.Date
+  status          MemberStatus @default(active)
+  createdBy       String       @db.Char(36)
+  branchId        String?      @db.Char(36)
+  createdAt       DateTime     @default(now()) @db.DateTime(3)
+
+  // Ethiopian National ID (Fayda / ብሔራዊ መታወቂያ) & Residence
+  fullNameAmharic        String?   @db.VarChar(200)
+  nationalIdFin          String?   @unique @db.VarChar(50)
+  nationalIdFrontUrl     String?   @db.LongText
+  nationalIdBackUrl      String?   @db.LongText
+  nationalIdExpiry       DateTime? @db.Date
+  nationalIdIssueDate    DateTime? @db.Date
+  region                 String?   @db.VarChar(100)
+  zone                   String?   @db.VarChar(100)
+  woreda                 String?   @db.VarChar(100)
+  kebele                 String?   @db.VarChar(100)
+  houseNumber            String?   @db.VarChar(100)
+
+  // Biography & Employment
+  occupation             String?   @db.VarChar(150)
+  employer               String?   @db.VarChar(150)
+  monthlyIncome          Decimal?  @db.Decimal(15, 2)
+
+  // Emergency Contact
+  emergencyContactName   String?   @db.VarChar(150)
+  emergencyContactPhone  String?   @db.VarChar(50)
+  emergencyContactRelation String? @db.VarChar(100)
+
+  // KYC System Status & Tier Level
+  kycLevel               String    @default("LEVEL_1") @db.VarChar(20)
+  kycStatus              String    @default("VERIFIED") @db.VarChar(20)
+
+  // Account Verification & Security Sync
+  isPhoneVerified        Boolean   @default(false)
+  isEmailVerified        Boolean   @default(false)
+  activationCode         String?   @db.VarChar(20)
+  activationExpiresAt    DateTime? @db.DateTime(3)
+  securityKeyphrase      String?   @db.VarChar(500)
+
+  // Associated User Account for Self-Service Portal Login
+  userId                 String?   @unique @db.Char(36)
+  user                   User?     @relation("MemberUserAccount", fields: [userId], references: [id], onDelete: SetNull)
+
+  // Biometrics & Visual Profile Media
+  passportPhotoUrl       String?   @db.LongText
+  voiceRecordingUrl      String?   @db.LongText
+  fingerprintUrl         String?   @db.LongText
+  fingerprintTemplate    String?   @db.LongText
+
+  focalAgent      FocalAgent?          @relation(fields: [focalAgentId], references: [id])
+  createdByUser   User                 @relation("MemberCreatedBy", fields: [createdBy], references: [id])
+  savingsAccounts SavingsAccount[]
+  loans           Loan[]
+  guaranteedLoans Guarantor[]          @relation("GuarantorMember")
+  guarantorProfiles GuarantorProfile[]  @relation("MemberGuarantorProfile")
+  documents       MemberDocument[]
+  dividendPayouts DividendPayout[]
+  shareAccount    ShareAccount?
+  notifications   Notification[]
+  collectionEntries DailyCollectionEntry[]
+  branch          Branch?              @relation(fields: [branchId], references: [id])
+  systemAlerts    SystemAlert[]
+  bankAccounts    MemberBankAccount[]
+  transactionRequests MemberTransactionRequest[]
+
+  @@index([phone])
+  @@index([focalAgentId])
+  @@index([nationalId])
+  @@index([userId])
+  @@map("members")
+}
+
+// ─── Member External Bank Accounts ───────────────────────────────────────────
+
+model MemberBankAccount {
+  id                 String    @id @default(uuid()) @db.Char(36)
+  memberId           String    @db.Char(36)
+  bankName           String    @db.VarChar(100)
+  accountNumber      String    @db.VarChar(50)
+  accountHolderName  String    @db.VarChar(200)
+  branchName         String?   @db.VarChar(150)
+  isPrimary          Boolean   @default(false)
+  isActive           Boolean   @default(true)
+  verifiedAt         DateTime? @db.DateTime(3)
+  addedBy            String?   @db.Char(36)
+  createdAt          DateTime  @default(now()) @db.DateTime(3)
+  updatedAt          DateTime  @updatedAt @db.DateTime(3)
+
+  member             Member    @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  transactionRequests MemberTransactionRequest[]
+
+  @@index([memberId])
+  @@map("member_bank_accounts")
+}
+
+// ─── Member Documents (KYC) ──────────────────────────────────────────────────
+
+enum DocType {
+  biometric_photo
+  signature_graphic
+  national_id
+  proof_of_address
+}
+
+enum DocVerificationStatus {
+  pending
+  verified
+  rejected
+}
+
+model MemberDocument {
+  id                 String                @id @default(uuid()) @db.Char(36)
+  memberId           String                @db.Char(36)
+  docType            DocType
+  fileName           String                @db.VarChar(255)
+  fileKey            String                @db.LongText
+  mimeType           String                @db.VarChar(100)
+  fileSize           Int
+  checksum           String?               @db.VarChar(64)
+  isEncrypted        Boolean               @default(true)
+  verificationStatus DocVerificationStatus @default(pending)
+  rejectionReason    String?               @db.VarChar(255)
+  uploadedAt         DateTime              @default(now()) @db.DateTime(3)
+  verifiedAt         DateTime?             @db.DateTime(3)
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@map("member_documents")
+}
+
+enum CapitalizationFrequency {
+  monthly
+  quarterly
+  annually
+}
+
+enum InstructionFrequency {
+  daily
+  weekly
+  monthly
+}
+
+enum InstructionDestination {
+  savings_account
+  loan_repayment
+}
+
+enum InstructionStatus {
+  active
+  paused
+  failed
+  completed
+}
+
+// ─── Savings ──────────────────────────────────────────────────────────────────
+
+model SavingsProduct {
+  id                      String                  @id @default(uuid()) @db.Char(36)
+  name                    String                  @db.VarChar(100)
+  type                    SavingsType
+  interestRate            Decimal                 @default(0) @db.Decimal(5, 2)
+  minBalance              Decimal                 @default(0) @db.Decimal(15, 2)
+  noticePeriodDays        Int                     @default(0)
+  lockPeriodMonths        Int?                    @default(0)
+  earlyWithdrawalPenalty  Decimal?                @default(0) @db.Decimal(5, 2)
+  targetAmount            Decimal?                @default(0) @db.Decimal(15, 2)
+  capitalizationFrequency CapitalizationFrequency @default(monthly)
+  isTargetSavings         Boolean                 @default(false)
+  isTermDeposit           Boolean                 @default(false)
+
+  accounts SavingsAccount[]
+
+  @@map("savings_products")
+}
+
+model SavingsAccount {
+  id            String    @id @default(uuid()) @db.Char(36)
+  accountNumber String?   @unique @db.VarChar(50)
+  memberId      String    @db.Char(36)
+  productId     String    @db.Char(36)
+  branchId      String?   @db.Char(36)
+  targetAmount  Decimal?  @db.Decimal(15, 2)
+  lienBalance   Decimal   @default(0) @db.Decimal(15, 2)
+  maturityDate  DateTime? @db.Date
+  openedAt      DateTime  @default(now()) @db.DateTime(3)
+
+  member              Member                @relation(fields: [memberId], references: [id])
+  product             SavingsProduct        @relation(fields: [productId], references: [id])
+  branch              Branch?               @relation(fields: [branchId], references: [id])
+  txns                SavingsTxn[]
+  guarantorLocks      Guarantor[]
+  accruedInterests    AccruedInterest[]
+  standingSource      StandingInstruction[] @relation("SourceSavingsAccount")
+  standingDestination StandingInstruction[] @relation("TargetSavingsAccount")
+  transactionRequests MemberTransactionRequest[]
+
+  @@unique([memberId, productId])
+  @@map("savings_accounts")
+}
+
+model AccruedInterest {
+  id            String    @id @default(uuid()) @db.Char(36)
+  accountId     String    @db.Char(36)
+  accrualDate   DateTime  @db.Date
+  balance       Decimal   @db.Decimal(15, 2)
+  annualRate    Decimal   @db.Decimal(5, 2)
+  dailyInterest Decimal   @db.Decimal(15, 4)
+  isCapitalized Boolean   @default(false)
+  capitalizedAt DateTime? @db.DateTime(3)
+  createdAt     DateTime  @default(now()) @db.DateTime(3)
+
+  account SavingsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, accrualDate])
+  @@index([isCapitalized])
+  @@map("accrued_interests")
+}
+
+model StandingInstruction {
+  id              String                 @id @default(uuid()) @db.Char(36)
+  sourceAccountId String                 @db.Char(36)
+  destinationType InstructionDestination
+  targetAccountId String?                @db.Char(36)
+  targetLoanId    String?                @db.Char(36)
+  amount          Decimal                @db.Decimal(15, 2)
+  frequency       InstructionFrequency
+  nextRunDate     DateTime               @db.Date
+  status          InstructionStatus      @default(active)
+  lastRunAt       DateTime?              @db.DateTime(3)
+  failureReason   String?                @db.VarChar(255)
+  createdAt       DateTime               @default(now()) @db.DateTime(3)
+  updatedAt       DateTime               @updatedAt @db.DateTime(3)
+
+  sourceAccount SavingsAccount  @relation("SourceSavingsAccount", fields: [sourceAccountId], references: [id], onDelete: Cascade)
+  targetAccount SavingsAccount? @relation("TargetSavingsAccount", fields: [targetAccountId], references: [id])
+  targetLoan    Loan?           @relation(fields: [targetLoanId], references: [id])
+
+  @@index([sourceAccountId])
+  @@index([nextRunDate, status])
+  @@map("standing_instructions")
+}
+
+model SavingsTxn {
+  id                   String        @id @default(uuid()) @db.Char(36)
+  accountId            String        @db.Char(36)
+  type                 TxnType
+  amount               Decimal       @db.Decimal(15, 2)
+  receiptNo            String?       @unique @db.VarChar(30)
+  focalAgentId         String?       @db.Char(36)
+  paymentMethod        PaymentMethod @default(cash)
+  txnDate              DateTime      @db.Date
+  reasonCode           String?       @db.VarChar(50)
+  recordedBy           String        @db.Char(36)
+  branchId             String?       @db.Char(36)
+  bankTxnId            String?       @db.VarChar(100)
+  manualReceiptNo      String?       @db.VarChar(50)
+  receiptAttachmentUrl String?       @db.LongText
+  notes                String?       @db.Text
+  createdAt            DateTime      @default(now()) @db.DateTime(3)
+
+  account        SavingsAccount @relation(fields: [accountId], references: [id])
+  focalAgent     FocalAgent?    @relation(fields: [focalAgentId], references: [id])
+  branch         Branch?        @relation(fields: [branchId], references: [id])
+  recordedByUser User           @relation(fields: [recordedBy], references: [id])
+
+  @@index([accountId, txnDate])
+  @@map("savings_txn")
+}
+
+// ─── Member Transaction Requests (Deposits & Withdrawals with OTP & Teller Approval) ─
+
+model MemberTransactionRequest {
+  id                  String    @id @default(uuid()) @db.Char(36)
+  requestNumber       String    @unique @db.VarChar(50)
+  memberId            String    @db.Char(36)
+  savingsAccountId    String    @db.Char(36)
+  type                String    @db.VarChar(20) // 'deposit' | 'withdrawal'
+  amount              Decimal   @db.Decimal(15, 2)
+  status              String    @default("PENDING") @db.VarChar(20) // 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED'
+
+  // Bank & Account details
+  bankName            String?   @db.VarChar(100)
+  bankAccountNumber   String?   @db.VarChar(50)
+  bankAccountHolder   String?   @db.VarChar(200)
+  memberBankAccountId String?   @db.Char(36)
+
+  // Member submission details
+  bankTxnId           String?   @db.VarChar(100)
+  depositSlipUrl      String?   @db.LongText
+  memberRemarks       String?   @db.Text
+  otpVerified         Boolean   @default(false)
+  otpVerifiedAt       DateTime? @db.DateTime(3)
+
+  // Teller / Staff Approval & Execution
+  processedBy         String?   @db.Char(36)
+  processedAt         DateTime? @db.DateTime(3)
+  manualReceiptNo     String?   @db.VarChar(50)
+  tellerBankTxnId     String?   @db.VarChar(100)
+  tellerReceiptUrl    String?   @db.LongText
+  tellerRemarks       String?   @db.Text
+  rejectionReason     String?   @db.Text
+  savingsTxnId        String?   @db.Char(36)
+
+  createdAt           DateTime  @default(now()) @db.DateTime(3)
+  updatedAt           DateTime  @updatedAt @db.DateTime(3)
+
+  member              Member    @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  savingsAccount      SavingsAccount @relation(fields: [savingsAccountId], references: [id], onDelete: Cascade)
+  memberBankAccount   MemberBankAccount? @relation(fields: [memberBankAccountId], references: [id], onDelete: SetNull)
+
+  @@index([memberId])
+  @@index([savingsAccountId])
+  @@index([status])
+  @@index([type])
+  @@map("member_transaction_requests")
+}
+
+// ─── Loans ────────────────────────────────────────────────────────────────────
+
+model LoanProduct {
+  id          String   @id @default(uuid()) @db.Char(36)
+  name        String   @db.VarChar(100)
+  loanType    LoanType @default(regular)
+  isActive    Boolean  @default(true)
+  description String?  @db.VarChar(500)
+
+  // ── Amount Range ──────────────────────────────────
+  minAmount   Decimal  @default(0) @db.Decimal(15, 2)
+  maxAmount   Decimal  @default(0) @db.Decimal(15, 2)
+  termMonths  Int      @default(12)
+  termUnit    TermUnit @default(month)
+  interestCalcMode InterestCalcMode @default(prorated)
+  amortizationType String           @default("declining_balance") @db.VarChar(50)
+  penaltyRate Decimal  @default(0) @db.Decimal(5, 2)
+
+  // ── Eligibility ───────────────────────────────────
+  // Daily loan-saving deposit required (ETB/day)
+  reqDailyLoanSaving   Decimal  @default(0) @db.Decimal(15, 2)
+  // Minimum registration fee member must have paid
+  reqRegistrationFee   Decimal  @default(0) @db.Decimal(15, 2)
+  // Loan ceiling = this multiplier × member's loan-saving balance (e.g. 1.5 = 150%)
+  loanSavingMultiplier Decimal  @default(0) @db.Decimal(5, 2)
+
+  // ── Fees ──────────────────────────────────────────
+  bookFee         Decimal  @default(0) @db.Decimal(15, 2)
+
+  // ── Interest (regular / special) ──────────────────
+  interestRate    Decimal  @default(0) @db.Decimal(5, 2)
+  insuranceRate   Decimal  @default(0) @db.Decimal(5, 2)
+  serviceRate     Decimal  @default(0) @db.Decimal(5, 2)
+
+  // ── Share requirement (regular / special) ─────────
+  // JSON: [{"fromAmount":0,"toAmount":50000,"minShares":5}, ...]
+  shareRequirements Json?
+
+  // ── Emergency: day-interest tiers ─────────────────
+  // JSON: [{"maxDays":30,"rate":2.0},{"maxDays":60,"rate":4.0}, ...]
+  dayInterestTiers Json?
+
+  loans Loan[]
+
+  @@map("loan_products")
+}
+
+model Loan {
+  id            String     @id @default(uuid()) @db.Char(36)
+  memberId      String     @db.Char(36)
+  loanProductId String     @db.Char(36)
+  loanType      LoanType   @default(regular)
+  principal     Decimal    @db.Decimal(15, 2)
+  interestRate  Decimal    @db.Decimal(5, 2)
+  insuranceRate Decimal    @default(0) @db.Decimal(5, 2)
+  serviceRate   Decimal    @default(0) @db.Decimal(5, 2)
+  bookFee       Decimal    @default(0) @db.Decimal(15, 2)
+  totalFees     Decimal    @default(0) @db.Decimal(15, 2)
+  termMonths    Int
+  disbursedDate       DateTime?  @db.Date
+  dueDate             DateTime?  @db.Date
+  scheduleStartDate   DateTime?  @db.Date
+  netDisbursed        Decimal?   @db.Decimal(15, 2)
+  upfrontDeduction    Decimal?   @db.Decimal(15, 2)
+  deductFeesUpfront   Boolean    @default(false)
+  amortizationType    String     @default("declining_balance") @db.VarChar(50)
+  assetQuality        String     @default("pass") @db.VarChar(50)
+  daysPastDue         Int        @default(0)
+  provisionAmount     Decimal    @default(0) @db.Decimal(15, 2)
+  creditScore         Int        @default(700)
+  collateralValue     Decimal    @default(0) @db.Decimal(15, 2)
+  collateralDescription String?  @db.Text
+  applicationDocuments  Json?
+  status              LoanStatus @default(pending)
+  outstanding         Decimal    @default(0) @db.Decimal(15, 2)
+  branchId            String?    @db.Char(36)
+  
+  reviewNote    String?    @db.Text
+  reviewedBy    String?    @db.Char(36)
+  reviewedAt    DateTime?  @db.DateTime(3)
+
+  approvalNote  String?    @db.Text
+  approvedBy    String?    @db.Char(36)
+  approvedAt    DateTime?  @db.DateTime(3)
+  
+  createdAt     DateTime   @default(now()) @db.DateTime(3)
+
+  member      Member      @relation(fields: [memberId], references: [id])
+  loanProduct LoanProduct @relation(fields: [loanProductId], references: [id])
+  reviewer    User?       @relation("LoanReviewedBy", fields: [reviewedBy], references: [id])
+  approver    User?       @relation("LoanApprovedBy", fields: [approvedBy], references: [id])
+  branch      Branch?     @relation(fields: [branchId], references: [id])
+  repayments           Repayment[]
+  guarantors           Guarantor[]
+  standingInstructions StandingInstruction[]
+
+  @@index([memberId])
+  @@index([status, dueDate])
+  @@map("loans")
+}
+
+model Repayment {
+  id               String   @id @default(uuid()) @db.Char(36)
+  loanId           String   @db.Char(36)
+  amount           Decimal  @db.Decimal(15, 2)
+  principalPortion Decimal  @db.Decimal(15, 2)
+  interestPortion  Decimal  @db.Decimal(15, 2)
+  penaltyPortion   Decimal  @default(0) @db.Decimal(15, 2)
+  feePortion       Decimal  @default(0) @db.Decimal(15, 2)
+  receiptNo        String?  @unique @db.VarChar(30)
+  paidDate         DateTime @db.Date
+  recordedBy       String   @db.Char(36)
+  focalAgentId     String?  @db.Char(36)
+  branchId         String?  @db.Char(36)
+  createdAt        DateTime @default(now()) @db.DateTime(3)
+
+  loan           Loan        @relation(fields: [loanId], references: [id])
+  recordedByUser User        @relation(fields: [recordedBy], references: [id])
+  focalAgent     FocalAgent? @relation(fields: [focalAgentId], references: [id])
+  branch         Branch?     @relation(fields: [branchId], references: [id])
+
+  @@index([loanId])
+  @@map("repayments")
+}
+
+model Guarantor {
+  id                   String   @id @default(uuid()) @db.Char(36)
+  loanId               String   @db.Char(36)
+  guarantorMemberId    String?  @db.Char(36)
+  guarantorProfileId   String?  @db.Char(36)
+  guarantorAccountId   String?  @db.Char(36)
+  guaranteedAmount     Decimal  @db.Decimal(15, 2)
+  lienAmount           Decimal  @default(0) @db.Decimal(15, 2)
+  relation             String?  @db.VarChar(100)
+  employer             String?  @db.VarChar(150)
+  phone                String?  @db.VarChar(30)
+  nationalId           String?  @db.VarChar(50)
+  notes                String?  @db.Text
+  attachments          Json?
+  status               String   @default("active") @db.VarChar(50)
+  createdAt            DateTime @default(now()) @db.DateTime(3)
+
+  loan                 Loan              @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  guarantorMember      Member?           @relation("GuarantorMember", fields: [guarantorMemberId], references: [id])
+  guarantorProfile     GuarantorProfile? @relation(fields: [guarantorProfileId], references: [id])
+  guarantorAccount     SavingsAccount?   @relation(fields: [guarantorAccountId], references: [id])
+
+  @@index([loanId])
+  @@index([guarantorMemberId])
+  @@index([guarantorProfileId])
+  @@map("guarantors")
+}
+
+model GuarantorProfile {
+  id          String    @id @default(uuid()) @db.Char(36)
+  fullName    String    @db.VarChar(200)
+  phone       String?   @db.VarChar(30)
+  email       String?   @db.VarChar(200)
+  nationalId  String?   @db.VarChar(50)
+  address     String?   @db.VarChar(500)
+  employer    String?   @db.VarChar(200)
+  jobTitle    String?   @db.VarChar(150)
+  gender      String?   @db.VarChar(10)
+  dateOfBirth DateTime? @db.Date
+  relation    String?   @db.VarChar(100)
+  notes       String?   @db.Text
+  attachments Json?
+  memberId    String?   @db.Char(36)
+  status      String    @default("active") @db.VarChar(50)
+  createdAt   DateTime  @default(now()) @db.DateTime(3)
+  updatedAt   DateTime  @updatedAt @db.DateTime(3)
+
+  member     Member?     @relation("MemberGuarantorProfile", fields: [memberId], references: [id])
+  guarantors Guarantor[]
+
+  @@index([memberId])
+  @@map("guarantor_profiles")
+}
+
+// ─── Daily Collection ─────────────────────────────────────────────────────────
+
+model DailyCollection {
+  id             String   @id @default(uuid()) @db.Char(36)
+  focalAgentId   String   @db.Char(36)
+  collectionDate DateTime @db.Date
+  totalCollected Decimal  @default(0) @db.Decimal(15, 2)
+  membersServed  Int      @default(0)
+  reconciled     Boolean  @default(false)
+  handoverStatus String   @default("pending") @db.VarChar(50)
+  receivedById   String?  @db.Char(36)
+  receivedAt     DateTime? @db.DateTime(3)
+  branchId       String?  @db.Char(36)
+
+  focalAgent FocalAgent              @relation(fields: [focalAgentId], references: [id])
+  receivedBy User?                   @relation(fields: [receivedById], references: [id])
+  branch     Branch?                 @relation(fields: [branchId], references: [id])
+  entries    DailyCollectionEntry[]
+
+  @@map("daily_collection")
+}
+
+model DailyCollectionEntry {
+  id                  String   @id @default(uuid()) @db.Char(36)
+  sessionId           String   @db.Char(36)
+  memberId            String   @db.Char(36)
+  voluntarySaving        Decimal  @default(0) @db.Decimal(15, 2)
+  interestFromVoluntary  Decimal  @default(0) @db.Decimal(15, 2)
+  loanSaving             Decimal  @default(0) @db.Decimal(15, 2)
+  regularSaving          Decimal  @default(0) @db.Decimal(15, 2)
+  interestFromRegular    Decimal  @default(0) @db.Decimal(15, 2)
+  childrensSaving        Decimal  @default(0) @db.Decimal(15, 2)
+  loanAmount             Decimal  @default(0) @db.Decimal(15, 2)
+  dailyLoanRepayment     Decimal  @default(0) @db.Decimal(15, 2)
+  bookFee                Decimal  @default(0) @db.Decimal(15, 2)
+  dailyCollectedShare    Decimal  @default(0) @db.Decimal(15, 2)
+  registrationFee        Decimal  @default(0) @db.Decimal(15, 2)
+  loanInterestAmount     Decimal  @default(0) @db.Decimal(15, 2)
+  totalAmount            Decimal  @default(0) @db.Decimal(15, 2)
+  recordedBy          String   @db.Char(36)
+  receiptNo           String?  @unique @db.VarChar(30)
+  focalAgentId        String?  @db.Char(36)
+  branchId            String?  @db.Char(36)
+  createdAt           DateTime @default(now()) @db.DateTime(3)
+
+  session    DailyCollection @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  member     Member          @relation(fields: [memberId], references: [id])
+  recordedByUser User        @relation("CollectionEntryRecordedBy", fields: [recordedBy], references: [id])
+  focalAgent     FocalAgent? @relation(fields: [focalAgentId], references: [id])
+  branch         Branch?     @relation(fields: [branchId], references: [id])
+
+  @@map("daily_collection_entries")
+}
+
+// ─── Shares ───────────────────────────────────────────────────────────────────
+
+model ShareConfig {
+  id              String   @id @default("singleton") @db.VarChar(50)
+  sharePrice      Decimal  @db.Decimal(15, 2)
+  totalAvailable  Int      @default(0)
+  minPerMember    Int      @default(1)
+  maxPerMember    Int      @default(0) // 0 means no limit
+  updatedAt       DateTime @updatedAt @db.DateTime(3)
+
+  @@map("share_config")
+}
+
+model ShareAccount {
+  id        String   @id @default(uuid()) @db.Char(36)
+  memberId  String   @unique @db.Char(36)
+  balance   Int      @default(0) // number of shares
+  branchId  String?  @db.Char(36)
+  openedAt  DateTime @default(now()) @db.DateTime(3)
+
+  member Member     @relation(fields: [memberId], references: [id])
+  branch Branch?    @relation(fields: [branchId], references: [id])
+  txns   ShareTxn[]
+
+  @@map("share_accounts")
+}
+
+enum ShareTxnType {
+  purchase
+  transfer_in
+  transfer_out
+}
+
+model ShareTxn {
+  id            String        @id @default(uuid()) @db.Char(36)
+  accountId     String        @db.Char(36)
+  type          ShareTxnType
+  shares        Int
+  pricePerShare Decimal       @db.Decimal(15, 2)
+  totalAmount   Decimal       @db.Decimal(15, 2)
+  paymentMethod PaymentMethod @default(cash)
+  txnDate       DateTime      @db.Date
+  receiptNo     String?       @unique @db.VarChar(30)
+  focalAgentId  String?       @db.Char(36)
+  branchId      String?       @db.Char(36)
+  recordedBy    String        @db.Char(36)
+  createdAt     DateTime      @default(now()) @db.DateTime(3)
+
+  account        ShareAccount @relation(fields: [accountId], references: [id])
+  focalAgent     FocalAgent?  @relation(fields: [focalAgentId], references: [id])
+  branch         Branch?      @relation(fields: [branchId], references: [id])
+  recordedByUser User         @relation(fields: [recordedBy], references: [id])
+
+  @@index([accountId, txnDate])
+  @@map("share_txn")
+}
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+model Notification {
+  id           String              @id @default(uuid()) @db.Char(36)
+  memberId     String?             @db.Char(36)
+  channel      NotificationChannel
+  triggerEvent String              @db.VarChar(100)
+  status       NotificationStatus  @default(pending)
+  payload      String?             @db.Text
+  sentAt       DateTime?           @db.DateTime(3)
+  createdAt    DateTime            @default(now()) @db.DateTime(3)
+
+  member Member? @relation(fields: [memberId], references: [id])
+
+  @@map("notifications")
+}
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Char(36)
+  userId      String?  @db.Char(36)
+  action      String   @db.VarChar(100)
+  entityType  String   @db.VarChar(50)
+  entityId    String?  @db.Char(36)
+  ipAddress   String?  @db.VarChar(45)
+  userAgent   String?  @db.VarChar(500)
+  diffBefore  Json?
+  diffAfter   Json?
+  metadata    Json?
+  createdAt   DateTime @default(now()) @db.DateTime(3)
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_log")
+}
+
+// ─── Report Snapshots ─────────────────────────────────────────────────────────
+
+model ReportSnapshot {
+  id          String    @id @default(uuid()) @db.Char(36)
+  reportName  String    @db.VarChar(100)
+  periodFrom  DateTime? @db.Date
+  periodTo    DateTime? @db.Date
+  data        Json
+  generatedAt DateTime  @default(now()) @db.DateTime(3)
+
+  @@map("report_snapshots")
+}
+
+// ─── Database Backups ─────────────────────────────────────────────────────────
+
+model DatabaseBackup {
+  id          String   @id @default(uuid()) @db.Char(36)
+  filename    String   @unique @db.VarChar(255)
+  filePath    String   @db.VarChar(500)
+  fileSize    BigInt   @default(0)
+  backupType  String   @default("FULL") @db.VarChar(50) // FULL, MODULE
+  moduleName  String?  @db.VarChar(100)
+  recordCounts Json?
+  checksum    String?  @db.VarChar(128)
+  createdBy   String?  @db.VarChar(200)
+  createdAt   DateTime @default(now()) @db.DateTime(3)
+
+  @@map("database_backups")
+}
+
+model BackupSchedule {
+  id             String    @id @default("default-schedule") @db.VarChar(50)
+  isEnabled      Boolean   @default(true)
+  frequency      String    @default("DAILY") @db.VarChar(20) // HOURLY, DAILY, WEEKLY, MONTHLY
+  timeOfDay      String    @default("02:00") @db.VarChar(10) // HH:MM
+  retentionCount Int       @default(30)
+  lastRunAt      DateTime? @db.DateTime(3)
+  nextRunAt      DateTime? @db.DateTime(3)
+  updatedAt      DateTime  @updatedAt @db.DateTime(3)
+
+  @@map("backup_schedules")
+}
+
+
+
+
+// ─── Dividends Engine ─────────────────────────────────────────────────────────
+
+enum DividendStrategy {
+  flat_rate
+  time_weighted
+}
+
+enum DividendRunStatus {
+  draft
+  calculated
+  approved
+  posted
+}
+
+model DividendRun {
+  id                   String            @id @default(uuid()) @db.Char(36)
+  fiscalYear           Int
+  totalPool            Decimal           @db.Decimal(15, 2)
+  distributionStrategy DividendStrategy  @default(flat_rate)
+  status               DividendRunStatus @default(draft)
+  totalSharesEligible  Int               @default(0)
+  totalDividendPaid    Decimal           @default(0) @db.Decimal(15, 2)
+  signedDocUrl         String?           @db.VarChar(512)
+  calculatedAt         DateTime?         @db.DateTime(3)
+  approvedAt           DateTime?         @db.DateTime(3)
+  postedAt             DateTime?         @db.DateTime(3)
+  createdAt            DateTime          @default(now()) @db.DateTime(3)
+
+  payouts              DividendPayout[]
+
+  @@unique([fiscalYear, distributionStrategy])
+  @@map("dividend_runs")
+}
+
+model DividendPayout {
+  id                   String      @id @default(uuid()) @db.Char(36)
+  dividendRunId        String      @db.Char(36)
+  memberId             String      @db.Char(36)
+  shareBalance         Int         @default(0)
+  weightedShareBalance Decimal     @default(0) @db.Decimal(18, 4)
+  payoutAmount         Decimal     @db.Decimal(15, 2)
+  isPosted             Boolean     @default(false)
+  postedAt             DateTime?   @db.DateTime(3)
+
+  dividendRun          DividendRun @relation(fields: [dividendRunId], references: [id], onDelete: Cascade)
+  member               Member      @relation(fields: [memberId], references: [id])
+
+  @@unique([dividendRunId, memberId])
+  @@map("dividend_payouts")
+}
+
+// ─── System Alerts (In-App Notifications) ────────────────────────────────────
+
+model SystemAlert {
+  id          String   @id @default(uuid()) @db.Char(36)
+  // Target user (recipient)
+  userId      String   @db.Char(36)
+  // Optional: linked entity
+  memberId    String?  @db.Char(36)
+  // Alert data
+  event       String   @db.VarChar(100)  // e.g. "kyc.document_uploaded"
+  title       String   @db.VarChar(255)
+  message     String   @db.Text
+  // Who triggered the alert (the uploader)
+  actorId     String?  @db.Char(36)
+  actorName   String?  @db.VarChar(200)
+  actorRole   String?  @db.VarChar(100)
+  // State
+  isRead      Boolean  @default(false)
+  readAt      DateTime? @db.DateTime(3)
+  createdAt   DateTime @default(now()) @db.DateTime(3)
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  member      Member?  @relation(fields: [memberId], references: [id], onDelete: SetNull)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+  @@map("system_alerts")
+}
+
+// ─── Module 5: Financial & General Ledger (GL) Accounting ─────────────────────
+
+enum GLAccountType {
+  asset
+  liability
+  equity
+  revenue
+  expense
+}
+
+model GLAccount {
+  id          String        @id @default(uuid()) @db.Char(36)
+  code        String        @unique @db.VarChar(50)
+  name        String        @db.VarChar(200)
+  type        GLAccountType
+  parentId    String?       @db.Char(36)
+  isHeader    Boolean       @default(false)
+  balance     Decimal       @default(0) @db.Decimal(18, 2)
+  description String?       @db.Text
+  isActive    Boolean       @default(true)
+  createdAt   DateTime      @default(now()) @db.DateTime(3)
+  updatedAt   DateTime      @updatedAt @db.DateTime(3)
+
+  parent       GLAccount?    @relation("GLAccountHierarchy", fields: [parentId], references: [id])
+  children     GLAccount[]   @relation("GLAccountHierarchy")
+  journalLines JournalLine[]
+  vaults       Vault[]
+  tills        Till[]
+
+  @@map("gl_accounts")
+}
+
+enum JournalStatus {
+  draft
+  posted
+  voided
+}
+
+model JournalEntry {
+  id          String        @id @default(uuid()) @db.Char(36)
+  entryNumber String        @unique @db.VarChar(50)
+  entryDate   DateTime      @db.Date
+  description String        @db.Text
+  reference   String?       @db.VarChar(100)
+  status      JournalStatus @default(posted)
+  postedById  String?       @db.Char(36)
+  createdAt   DateTime      @default(now()) @db.DateTime(3)
+
+  lines       JournalLine[]
+
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id           String       @id @default(uuid()) @db.Char(36)
+  journalId    String       @db.Char(36)
+  glAccountId  String       @db.Char(36)
+  debit        Decimal      @default(0) @db.Decimal(18, 2)
+  credit       Decimal      @default(0) @db.Decimal(18, 2)
+  memo         String?      @db.VarChar(255)
+
+  journal      JournalEntry @relation(fields: [journalId], references: [id], onDelete: Cascade)
+  glAccount    GLAccount    @relation(fields: [glAccountId], references: [id])
+
+  @@index([journalId])
+  @@index([glAccountId])
+  @@map("journal_lines")
+}
+
+enum FixedAssetMethod {
+  straight_line
+  declining_balance
+}
+
+model FixedAsset {
+  id                       String           @id @default(uuid()) @db.Char(36)
+  code                     String           @unique @db.VarChar(50)
+  name                     String           @db.VarChar(200)
+  purchaseDate             DateTime         @db.Date
+  purchaseCost             Decimal          @db.Decimal(15, 2)
+  salvageValue             Decimal          @default(0) @db.Decimal(15, 2)
+  usefulLifeYears          Int              @default(5)
+  depreciationMethod       FixedAssetMethod @default(straight_line)
+  accumulatedDepreciation Decimal          @default(0) @db.Decimal(15, 2)
+  status                   String           @default("active") @db.VarChar(50)
+  createdAt                DateTime         @default(now()) @db.DateTime(3)
+
+  @@map("fixed_assets")
+}
+
+model LoanLossReserve {
+  id              String   @id @default(uuid()) @db.Char(36)
+  asOfDate        DateTime @db.Date
+  passAmount      Decimal  @default(0) @db.Decimal(15, 2)
+  specialMention  Decimal  @default(0) @db.Decimal(15, 2)
+  substandard     Decimal  @default(0) @db.Decimal(15, 2)
+  doubtful        Decimal  @default(0) @db.Decimal(15, 2)
+  lossAmount      Decimal  @default(0) @db.Decimal(15, 2)
+  requiredReserve Decimal  @db.Decimal(15, 2)
+  actualReserve   Decimal  @db.Decimal(15, 2)
+  journalEntryId  String?  @db.Char(36)
+  createdAt       DateTime @default(now()) @db.DateTime(3)
+
+  @@map("loan_loss_reserves")
+}
+
+// ─── Transactional Outbox (Microservices Event Backbone) ──────────────────────
+
+model OutboxEvent {
+  id          String    @id @default(uuid()) @db.Char(36)
+  aggregateId String    @db.VarChar(100)
+  eventType   String    @db.VarChar(100)
+  payload     Json
+  status      String    @default("PENDING") @db.VarChar(20) // PENDING, PUBLISHED, FAILED
+  retryCount  Int       @default(0)
+  lastError   String?   @db.Text
+  createdAt   DateTime  @default(now()) @db.DateTime(3)
+  publishedAt DateTime? @db.DateTime(3)
+
+  @@index([status, createdAt])
+  @@index([aggregateId])
+  @@map("outbox_events")
+}
+
+// ─── Human Resources (HRMS) Microservice Core ─────────────────────────────────
+
+model HrOrganizationUnit {
+  id          String   @id @default(uuid()) @db.Char(36)
+  code        String   @unique @db.VarChar(50)
+  name        String   @db.VarChar(200)
+  unitType    String   @default("department") @db.VarChar(50) // division, directorate, department, unit, section
+  parentId    String?  @db.Char(36)
+  managerId   String?  @db.Char(36)
+  costCenter  String?  @db.VarChar(100)
+  branchId    String?  @db.Char(36)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @db.DateTime(3)
+
+  parent      HrOrganizationUnit?  @relation("UnitHierarchy", fields: [parentId], references: [id])
+  children    HrOrganizationUnit[] @relation("UnitHierarchy")
+  branch      Branch?              @relation(fields: [branchId], references: [id])
+  positions   HrPosition[]
+  employees   HrEmployee[]
+
+  @@map("hr_organization_units")
+}
+
+model HrJobGrade {
+  id          String   @id @default(uuid()) @db.Char(36)
+  name        String   @unique @db.VarChar(100)
+  level       Int      @default(1)
+  minSalary   Decimal  @default(0) @db.Decimal(15, 2)
+  midSalary   Decimal  @default(0) @db.Decimal(15, 2)
+  maxSalary   Decimal  @default(0) @db.Decimal(15, 2)
+  createdAt   DateTime @default(now()) @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @db.DateTime(3)
+
+  positions   HrPosition[]
+
+  @@map("hr_job_grades")
+}
+
+model HrPosition {
+  id                String   @id @default(uuid()) @db.Char(36)
+  code              String   @unique @db.VarChar(50)
+  title             String   @db.VarChar(200)
+  departmentId      String   @db.Char(36)
+  gradeId           String?  @db.Char(36)
+  defaultRoleId     String?  @db.Char(36)
+  budgetedHeadcount Int      @default(1)
+  activeHeadcount   Int      @default(0)
+  status            String   @default("active") @db.VarChar(50) // active, vacant, frozen
+  jobDescription    String?  @db.Text
+  createdAt         DateTime @default(now()) @db.DateTime(3)
+  updatedAt         DateTime @updatedAt @db.DateTime(3)
+
+  department        HrOrganizationUnit @relation(fields: [departmentId], references: [id])
+  grade             HrJobGrade?        @relation(fields: [gradeId], references: [id])
+  defaultRole       Role?              @relation(fields: [defaultRoleId], references: [id])
+  employees         HrEmployee[]
+
+  @@map("hr_positions")
+}
+
+model HrEmployee {
+  id                    String    @id @default(uuid()) @db.Char(36)
+  employeeNumber        String    @unique @db.VarChar(50)
+  userId                String?   @unique @db.Char(36) // 1-to-1 link to auth user
+  firstName             String    @db.VarChar(100)
+  middleName            String?   @db.VarChar(100)
+  lastName              String    @db.VarChar(100)
+  email                 String    @unique @db.VarChar(200)
+  phone                 String?   @db.VarChar(50)
+  gender                String?   @db.VarChar(20)
+  dateOfBirth           DateTime? @db.Date
+  hireDate              DateTime  @db.Date
+  employmentType        String    @default("permanent") @db.VarChar(50) // permanent, contract, intern, temporary
+  status                String    @default("active") @db.VarChar(50) // active, probation, suspended, on_leave, terminated, resigned, retired
+  profilePictureUrl     String?   @db.LongText
+  departmentId          String    @db.Char(36)
+  positionId            String?   @db.Char(36)
+  supervisorId          String?   @db.Char(36)
+  branchId              String?   @db.Char(36)
+  tinNumber             String?   @db.VarChar(50)
+  pensionNumber         String?   @db.VarChar(50)
+  bankName              String?   @db.VarChar(100)
+  bankAccountNumber     String?   @db.VarChar(100)
+  emergencyContactName  String?   @db.VarChar(200)
+  emergencyContactPhone String?   @db.VarChar(50)
+  address               String?   @db.Text
+
+  // National ID / Fayda (Ethiopian Digital ID)
+  nationalIdNumber      String?   @db.VarChar(50) // FAN (e.g. 5801468325915421)
+  nationalIdFin         String?   @db.VarChar(50) // FIN (e.g. 803748197231)
+  nationalIdFrontUrl    String?   @db.LongText   // Front card scan URL
+  nationalIdBackUrl     String?   @db.LongText   // Back card scan URL
+  nationalIdExpiry      DateTime? @db.Date       // Expiry date (e.g. 2033/06/08)
+  nationalIdIssueDate   DateTime? @db.Date       // Issue date (e.g. 2025/06/07)
+  nationality           String?   @default("Ethiopian") @db.VarChar(50)
+  fullNameAmharic       String?   @db.VarChar(200)
+
+  // Residential Address Details
+  region                String?   @db.VarChar(100)
+  zone                  String?   @db.VarChar(100)
+  woreda                String?   @db.VarChar(100)
+  kebele                String?   @db.VarChar(50)
+  houseNumber           String?   @db.VarChar(50)
+
+  // Health & Medical Information
+  bloodGroup            String?   @db.VarChar(10) // A+, A-, B+, B-, AB+, AB-, O+, O-
+  medicalConditions     String?   @db.Text
+  disabilityStatus      String?   @default("none") @db.VarChar(50)
+  healthInsuranceProvider String? @db.VarChar(100)
+  healthInsurancePolicyNumber String? @db.VarChar(100)
+
+  // Education & Qualifications
+  highestEducation      String?   @db.VarChar(100)
+  fieldOfStudy          String?   @db.VarChar(150)
+  institution           String?   @db.VarChar(150)
+  graduationYear        Int?
+  certifications        String?   @db.Text
+
+  // Family & Dependents
+  maritalStatus         String?   @db.VarChar(30)
+  spouseName            String?   @db.VarChar(150)
+  dependentsCount       Int       @default(0)
+  emergencyContactRelation String? @db.VarChar(50)
+
+  // Work Experience
+  previousEmployer      String?   @db.VarChar(150)
+  previousJobTitle      String?   @db.VarChar(100)
+  yearsOfExperience     Decimal   @default(0) @db.Decimal(4, 1)
+  skillsSummary         String?   @db.Text
+
+  // Enhanced Bank & Financial
+  bankAccountHolderName String?   @db.VarChar(150)
+  bankBranch            String?   @db.VarChar(100)
+
+  createdAt             DateTime  @default(now()) @db.DateTime(3)
+  updatedAt             DateTime  @updatedAt @db.DateTime(3)
+
+  department            HrOrganizationUnit       @relation(fields: [departmentId], references: [id])
+  position              HrPosition?              @relation(fields: [positionId], references: [id])
+  branch                Branch?                  @relation(fields: [branchId], references: [id])
+  user                  User?                    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  supervisor            HrEmployee?              @relation("EmployeeSupervisor", fields: [supervisorId], references: [id])
+  subordinates          HrEmployee[]             @relation("EmployeeSupervisor")
+  leaveApplications     HrLeaveApplication[]
+  attendanceRecords     HrAttendanceRecord[]
+  appraisals            HrPerformanceAppraisal[]
+  movements             HrEmployeeMovement[]
+  trainingParticipants  HrTrainingParticipant[]
+  offboardingClearances HrOffboardingClearance[]
+
+  @@map("hr_employees")
+}
+
+model HrLeaveType {
+  id                 String   @id @default(uuid()) @db.Char(36)
+  name               String   @unique @db.VarChar(100)
+  code               String   @unique @db.VarChar(50)
+  daysAllowed        Int      @default(20)
+  isPaid             Boolean  @default(true)
+  requiresAttachment Boolean  @default(false)
+  allowCarryOver     Boolean  @default(false)
+  maxCarryOverDays   Int      @default(0)
+  createdAt          DateTime @default(now()) @db.DateTime(3)
+  updatedAt          DateTime @updatedAt @db.DateTime(3)
+
+  applications       HrLeaveApplication[]
+
+  @@map("hr_leave_types")
+}
+
+model HrLeaveApplication {
+  id              String   @id @default(uuid()) @db.Char(36)
+  employeeId      String   @db.Char(36)
+  leaveTypeId     String   @db.Char(36)
+  startDate       DateTime @db.Date
+  endDate         DateTime @db.Date
+  daysRequested   Decimal  @db.Decimal(5, 2)
+  reason          String?  @db.Text
+  status          String   @default("pending") @db.VarChar(50) // pending, approved_supervisor, approved_hr, rejected, cancelled
+  approvedById    String?  @db.Char(36)
+  rejectionReason String?  @db.Text
+  createdAt       DateTime @default(now()) @db.DateTime(3)
+  updatedAt       DateTime @updatedAt @db.DateTime(3)
+
+  employee        HrEmployee  @relation(fields: [employeeId], references: [id])
+  leaveType       HrLeaveType @relation(fields: [leaveTypeId], references: [id])
+
+  @@map("hr_leave_applications")
+}
+
+model HrAttendanceRecord {
+  id            String    @id @default(uuid()) @db.Char(36)
+  employeeId    String    @db.Char(36)
+  workDate      DateTime  @db.Date
+  checkIn       DateTime? @db.DateTime(3)
+  checkOut      DateTime? @db.DateTime(3)
+  regularHours  Decimal   @default(0) @db.Decimal(5, 2)
+  overtimeHours Decimal   @default(0) @db.Decimal(5, 2)
+  status        String    @default("present") @db.VarChar(50) // present, late, half_day, absent, on_leave
+  source        String    @default("web") @db.VarChar(50) // biometric, web, mobile, manual
+  notes         String?   @db.Text
+  createdAt     DateTime  @default(now()) @db.DateTime(3)
+  updatedAt     DateTime  @updatedAt @db.DateTime(3)
+
+  employee      HrEmployee @relation(fields: [employeeId], references: [id])
+
+  @@unique([employeeId, workDate])
+  @@map("hr_attendance_records")
+}
+
+model HrPerformanceCycle {
+  id          String   @id @default(uuid()) @db.Char(36)
+  title       String   @db.VarChar(200)
+  cycleType   String   @default("quarterly") @db.VarChar(50) // quarterly, biannual, annual
+  startDate   DateTime @db.Date
+  endDate     DateTime @db.Date
+  status      String   @default("active") @db.VarChar(50) // draft, active, evaluation, closed
+  createdAt   DateTime @default(now()) @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @db.DateTime(3)
+
+  appraisals  HrPerformanceAppraisal[]
+
+  @@map("hr_performance_cycles")
+}
+
+model HrPerformanceAppraisal {
+  id              String   @id @default(uuid()) @db.Char(36)
+  cycleId         String   @db.Char(36)
+  employeeId      String   @db.Char(36)
+  evaluatorId     String?  @db.Char(36)
+  selfScore       Decimal? @db.Decimal(5, 2)
+  managerScore    Decimal? @db.Decimal(5, 2)
+  finalScore      Decimal? @db.Decimal(5, 2)
+  rating          String?  @db.VarChar(50) // outstanding, exceeds, meets, needs_improvement, unsatisfactory
+  feedback        String?  @db.Text
+  developmentPlan String?  @db.Text
+  status          String   @default("draft") @db.VarChar(50) // draft, submitted, reviewed, finalized
+  createdAt       DateTime @default(now()) @db.DateTime(3)
+  updatedAt       DateTime @updatedAt @db.DateTime(3)
+
+  cycle           HrPerformanceCycle @relation(fields: [cycleId], references: [id])
+  employee        HrEmployee         @relation(fields: [employeeId], references: [id])
+
+  @@map("hr_performance_appraisals")
+}
+
+model HrEmployeeMovement {
+  id               String   @id @default(uuid()) @db.Char(36)
+  employeeId       String   @db.Char(36)
+  movementType     String   @db.VarChar(50) // transfer, promotion, demotion, salary_adjustment
+  fromDepartmentId String?  @db.Char(36)
+  toDepartmentId   String?  @db.Char(36)
+  fromPositionId   String?  @db.Char(36)
+  toPositionId     String?  @db.Char(36)
+  fromBranchId     String?  @db.Char(36)
+  toBranchId       String?  @db.Char(36)
+  fromRoleId       String?  @db.Char(36)
+  toRoleId         String?  @db.Char(36)
+  fromSalary       Decimal? @db.Decimal(15, 2)
+  toSalary         Decimal? @db.Decimal(15, 2)
+  effectiveDate    DateTime @db.Date
+  justification    String?  @db.Text
+  approvedById     String?  @db.Char(36)
+  status           String   @default("pending") @db.VarChar(50) // pending, approved, rejected
+  createdAt        DateTime @default(now()) @db.DateTime(3)
+  updatedAt        DateTime @updatedAt @db.DateTime(3)
+
+  employee         HrEmployee @relation(fields: [employeeId], references: [id])
+  fromBranch       Branch?    @relation("MovementFromBranch", fields: [fromBranchId], references: [id])
+  toBranch         Branch?    @relation("MovementToBranch", fields: [toBranchId], references: [id])
+  fromRole         Role?      @relation("MovementFromRole", fields: [fromRoleId], references: [id])
+  toRole           Role?      @relation("MovementToRole", fields: [toRoleId], references: [id])
+
+  @@map("hr_employee_movements")
+}
+
+model HrTrainingProgram {
+  id           String   @id @default(uuid()) @db.Char(36)
+  title        String   @db.VarChar(200)
+  provider     String?  @db.VarChar(200)
+  category     String?  @db.VarChar(100)
+  startDate    DateTime @db.Date
+  endDate      DateTime @db.Date
+  budgetCost   Decimal  @default(0) @db.Decimal(15, 2)
+  bondMonths   Int      @default(0)
+  status       String   @default("planned") @db.VarChar(50) // planned, ongoing, completed, cancelled
+  createdAt    DateTime @default(now()) @db.DateTime(3)
+  updatedAt    DateTime @updatedAt @db.DateTime(3)
+
+  participants HrTrainingParticipant[]
+
+  @@map("hr_training_programs")
+}
+
+model HrTrainingParticipant {
+  id               String    @id @default(uuid()) @db.Char(36)
+  programId        String    @db.Char(36)
+  employeeId       String    @db.Char(36)
+  completionStatus String    @default("enrolled") @db.VarChar(50) // enrolled, completed, dropped
+  score            Decimal?  @db.Decimal(5, 2)
+  certificateUrl   String?   @db.VarChar(500)
+  bondStartDate    DateTime? @db.Date
+  bondEndDate      DateTime? @db.Date
+  createdAt        DateTime  @default(now()) @db.DateTime(3)
+  updatedAt        DateTime  @updatedAt @db.DateTime(3)
+
+  program          HrTrainingProgram @relation(fields: [programId], references: [id])
+  employee         HrEmployee        @relation(fields: [employeeId], references: [id])
+
+  @@map("hr_training_participants")
+}
+
+model HrWorkforcePlan {
+  id                 String   @id @default(uuid()) @db.Char(36)
+  fiscalYear         String   @db.VarChar(50)
+  departmentId       String   @db.Char(36)
+  currentHeadcount   Int      @default(0)
+  requestedHeadcount Int      @default(0)
+  approvedHeadcount  Int      @default(0)
+  budgetEstimate     Decimal  @default(0) @db.Decimal(15, 2)
+  justification      String?  @db.Text
+  status             String   @default("draft") @db.VarChar(50) // draft, submitted, approved, rejected
+  createdAt          DateTime @default(now()) @db.DateTime(3)
+  updatedAt          DateTime @updatedAt @db.DateTime(3)
+
+  @@map("hr_workforce_plans")
+}
+
+model HrOffboardingClearance {
+  id                   String    @id @default(uuid()) @db.Char(36)
+  employeeId           String    @db.Char(36)
+  separationReason     String    @db.VarChar(50) // resignation, termination, contract_end, retirement
+  noticeDate           DateTime  @db.Date
+  lastWorkingDate      DateTime  @db.Date
+  itClearance          String    @default("pending") @db.VarChar(50) // pending, cleared, rejected
+  financeClearance     String    @default("pending") @db.VarChar(50)
+  departmentClearance  String    @default("pending") @db.VarChar(50)
+  hrClearance          String    @default("pending") @db.VarChar(50)
+  exitInterviewNotes   String?   @db.Text
+  rehireEligibility    String    @default("eligible") @db.VarChar(50) // eligible, review_required, do_not_rehire
+  status               String    @default("in_progress") @db.VarChar(50) // in_progress, completed
+  createdAt            DateTime  @default(now()) @db.DateTime(3)
+  updatedAt            DateTime  @updatedAt @db.DateTime(3)
+
+  employee             HrEmployee @relation(fields: [employeeId], references: [id])
+
+  @@map("hr_offboarding_clearances")
+}
+
+// ─── Module: Core Banking Cash, Vault & Till Management ──────────────────────
+
+enum TillSessionStatus {
+  open
+  closing_pending_vault
+  closed
+}
+
+enum CashTransferType {
+  vault_to_till
+  till_to_vault
+  vault_to_bank
+  bank_to_vault
+}
+
+enum CashTransferStatus {
+  pending
+  approved
+  completed
+  rejected
+  cancelled
+}
+
+enum VarianceType {
+  shortage
+  overage
+  exact
+}
+
+enum VarianceStatus {
+  pending
+  resolved
+}
+
+model Vault {
+  id             String            @id @default(uuid()) @db.Char(36)
+  branchId       String            @db.Char(36)
+  name           String            @db.VarChar(100)
+  code           String            @unique @db.VarChar(50)
+  glAccountId    String?           @db.Char(36)
+  balance        Decimal           @default(0) @db.Decimal(18, 2)
+  maxLimit       Decimal           @default(1000000) @db.Decimal(18, 2)
+  status         String            @default("open") @db.VarChar(30) // open, closed, locked
+  createdAt      DateTime          @default(now()) @db.DateTime(3)
+  updatedAt      DateTime          @updatedAt @db.DateTime(3)
+
+  branch         Branch            @relation(fields: [branchId], references: [id])
+  glAccount      GLAccount?        @relation(fields: [glAccountId], references: [id])
+  tills          Till[]
+  transfersFrom  CashTransfer[]    @relation("TransferFromVault")
+  transfersTo    CashTransfer[]    @relation("TransferToVault")
+  checks         VaultDailyCheck[]
+
+  @@map("vaults")
+}
+
+model Till {
+  id             String         @id @default(uuid()) @db.Char(36)
+  name           String         @db.VarChar(100)
+  code           String         @unique @db.VarChar(50)
+  userId         String         @db.Char(36) // Assigned teller
+  vaultId        String         @db.Char(36)
+  branchId       String         @db.Char(36)
+  glAccountId    String?        @db.Char(36)
+  balance        Decimal        @default(0) @db.Decimal(18, 2)
+  maxLimit       Decimal        @default(100000) @db.Decimal(18, 2)
+  isActive       Boolean        @default(true)
+  createdAt      DateTime       @default(now()) @db.DateTime(3)
+  updatedAt      DateTime       @updatedAt @db.DateTime(3)
+
+  user           User           @relation(fields: [userId], references: [id])
+  vault          Vault          @relation(fields: [vaultId], references: [id])
+  branch         Branch         @relation(fields: [branchId], references: [id])
+  glAccount      GLAccount?     @relation(fields: [glAccountId], references: [id])
+  sessions       TillSession[]
+  transfersFrom  CashTransfer[] @relation("TransferFromTill")
+  transfersTo    CashTransfer[] @relation("TransferToTill")
+
+  @@unique([userId, branchId])
+  @@map("tills")
+}
+
+model TillSession {
+  id              String              @id @default(uuid()) @db.Char(36)
+  sessionNumber   String              @unique @db.VarChar(50)
+  tillId          String              @db.Char(36)
+  userId          String              @db.Char(36)
+  branchId        String              @db.Char(36)
+  openedAt        DateTime            @default(now()) @db.DateTime(3)
+  closedAt        DateTime?           @db.DateTime(3)
+  openingBalance  Decimal             @default(0) @db.Decimal(18, 2)
+  expectedClose   Decimal             @default(0) @db.Decimal(18, 2)
+  countedClose    Decimal?            @db.Decimal(18, 2)
+  variance        Decimal?            @db.Decimal(18, 2)
+  status          TillSessionStatus   @default(open)
+  notes           String?             @db.Text
+  createdAt       DateTime            @default(now()) @db.DateTime(3)
+  updatedAt       DateTime            @updatedAt @db.DateTime(3)
+
+  till            Till                @relation(fields: [tillId], references: [id])
+  user            User                @relation(fields: [userId], references: [id])
+  branch          Branch              @relation(fields: [branchId], references: [id])
+  denominations   DenominationCount[]
+  variances       CashVariance[]
+
+  @@index([tillId, status])
+  @@index([userId, status])
+  @@map("till_sessions")
+}
+
+model CashTransfer {
+  id              String              @id @default(uuid()) @db.Char(36)
+  transferNumber  String              @unique @db.VarChar(50)
+  type            CashTransferType
+  fromVaultId     String?             @db.Char(36)
+  toVaultId       String?             @db.Char(36)
+  fromTillId      String?             @db.Char(36)
+  toTillId        String?             @db.Char(36)
+  fromAccountId   String?             @db.Char(36)
+  toAccountId     String?             @db.Char(36)
+  amount          Decimal             @db.Decimal(18, 2)
+  status          CashTransferStatus  @default(pending)
+  requestedById   String              @db.Char(36)
+  approvedById    String?             @db.Char(36)
+  receivedById    String?             @db.Char(36)
+  rejectionReason String?             @db.VarChar(255)
+  notes           String?             @db.Text
+  bankSlipRef     String?             @db.VarChar(100)
+  journalEntryId  String?             @db.Char(36)
+  branchId        String              @db.Char(36)
+  createdAt       DateTime            @default(now()) @db.DateTime(3)
+  approvedAt      DateTime?           @db.DateTime(3)
+  confirmedAt     DateTime?           @db.DateTime(3)
+
+  fromVault       Vault?              @relation("TransferFromVault", fields: [fromVaultId], references: [id])
+  toVault         Vault?              @relation("TransferToVault", fields: [toVaultId], references: [id])
+  fromTill        Till?               @relation("TransferFromTill", fields: [fromTillId], references: [id])
+  toTill          Till?               @relation("TransferToTill", fields: [toTillId], references: [id])
+  requestedBy     User                @relation("TransferRequestedBy", fields: [requestedById], references: [id])
+  approvedBy      User?               @relation("TransferApprovedBy", fields: [approvedById], references: [id])
+  receivedBy      User?               @relation("TransferReceivedBy", fields: [receivedById], references: [id])
+  branch          Branch              @relation(fields: [branchId], references: [id])
+  denominations   DenominationCount[]
+
+  @@index([type, status])
+  @@index([branchId])
+  @@map("cash_transfers")
+}
+
+model DenominationCount {
+  id              String            @id @default(uuid()) @db.Char(36)
+  referenceType   String            @db.VarChar(50) // till_open, till_close, vault_check, transfer
+  referenceId     String            @db.Char(36)
+  tillSessionId   String?           @db.Char(36)
+  cashTransferId  String?           @db.Char(36)
+  vaultCheckId    String?           @db.Char(36)
+  denomination    Decimal           @db.Decimal(10, 2)
+  quantity        Int
+  totalAmount     Decimal           @db.Decimal(18, 2)
+  createdAt       DateTime          @default(now()) @db.DateTime(3)
+
+  tillSession     TillSession?      @relation(fields: [tillSessionId], references: [id], onDelete: Cascade)
+  cashTransfer    CashTransfer?     @relation(fields: [cashTransferId], references: [id], onDelete: Cascade)
+  vaultCheck      VaultDailyCheck?  @relation(fields: [vaultCheckId], references: [id], onDelete: Cascade)
+
+  @@index([referenceType, referenceId])
+  @@map("denomination_counts")
+}
+
+model CashVariance {
+  id              String            @id @default(uuid()) @db.Char(36)
+  sessionId       String?           @db.Char(36)
+  vaultCheckId    String?           @db.Char(36)
+  amount          Decimal           @db.Decimal(18, 2) // positive for overage, negative for shortage
+  type            VarianceType
+  reason          String?           @db.Text
+  status          VarianceStatus    @default(pending)
+  resolvedById    String?           @db.Char(36)
+  resolutionNotes String?           @db.Text
+  journalEntryId  String?           @db.Char(36)
+  createdAt       DateTime          @default(now()) @db.DateTime(3)
+  resolvedAt      DateTime?         @db.DateTime(3)
+
+  session         TillSession?      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  vaultCheck      VaultDailyCheck?  @relation(fields: [vaultCheckId], references: [id], onDelete: Cascade)
+  resolvedBy      User?             @relation(fields: [resolvedById], references: [id])
+
+  @@index([status])
+  @@map("cash_variances")
+}
+
+model VaultDailyCheck {
+  id              String              @id @default(uuid()) @db.Char(36)
+  vaultId         String              @db.Char(36)
+  branchId        String              @db.Char(36)
+  checkDate       DateTime            @db.Date
+  checkType       String              @db.VarChar(20) // opening, closing, audit
+  systemBalance   Decimal             @db.Decimal(18, 2)
+  countedBalance  Decimal             @db.Decimal(18, 2)
+  variance        Decimal             @default(0) @db.Decimal(18, 2)
+  performedById   String              @db.Char(36)
+  status          String              @default("confirmed") @db.VarChar(30) // confirmed, discrepancy_flagged
+  notes           String?             @db.Text
+  createdAt       DateTime            @default(now()) @db.DateTime(3)
+
+  vault           Vault               @relation(fields: [vaultId], references: [id])
+  branch          Branch              @relation(fields: [branchId], references: [id])
+  performedBy     User                @relation(fields: [performedById], references: [id])
+  denominations   DenominationCount[]
+  variances       CashVariance[]
+
+  @@index([vaultId, checkDate])
+  @@map("vault_daily_checks")
+}
+
+// ─── Public Website & CMS Models ─────────────────────────────────────────────
+
+model WebsiteArticle {
+  id              String    @id @default(uuid()) @db.Char(36)
+  slug            String    @unique @db.VarChar(200)
+  title           String    @db.VarChar(255)
+  summary         String    @db.Text
+  content         String    @db.LongText
+  category        String    @default("news") @db.VarChar(100) // news, event, press_release, financial_tips, notice
+  coverImageUrl   String?   @db.VarChar(500)
+  author          String    @default("Efoyta SACCO") @db.VarChar(100)
+  publishedAt     DateTime? @db.DateTime(3)
+  isPublished     Boolean   @default(true)
+  isFeatured      Boolean   @default(false)
+  viewCount       Int       @default(0)
+  tags            String?   @db.VarChar(255)
+  createdAt       DateTime  @default(now()) @db.DateTime(3)
+  updatedAt       DateTime  @default(now()) @updatedAt @db.DateTime(3)
+
+  @@index([isPublished, category])
+  @@index([isFeatured])
+  @@map("website_articles")
+}
+
+model WebsiteBanner {
+  id               String   @id @default(uuid()) @db.Char(36)
+  title            String   @db.VarChar(255)
+  subtitle         String?  @db.Text
+  badge            String?  @db.VarChar(100)
+  imageUrl         String?  @db.VarChar(500)
+  videoUrl         String?  @db.VarChar(500)
+  mediaType        String   @default("image") @db.VarChar(20) // image, video
+  ctaText          String?  @db.VarChar(100)
+  ctaLink          String?  @db.VarChar(255)
+  secondaryCtaText String?  @db.VarChar(100)
+  secondaryCtaLink String?  @db.VarChar(255)
+  orderIndex       Int      @default(0)
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now()) @db.DateTime(3)
+  updatedAt        DateTime @default(now()) @updatedAt @db.DateTime(3)
+
+  @@index([isActive, orderIndex])
+  @@map("website_banners")
+}
+
+model WebsiteInquiry {
+  id          String    @id @default(uuid()) @db.Char(36)
+  fullName    String    @db.VarChar(200)
+  email       String    @db.VarChar(200)
+  phone       String    @db.VarChar(50)
+  subject     String    @db.VarChar(200)
+  message     String    @db.Text
+  inquiryType String    @default("general") @db.VarChar(50) // general, loan, savings, complaint, partnership
+  status      String    @default("pending") @db.VarChar(30) // pending, in_progress, resolved, spam
+  notes       String?   @db.Text
+  ipAddress   String?   @db.VarChar(100)
+  createdAt   DateTime  @default(now()) @db.DateTime(3)
+  resolvedAt  DateTime? @db.DateTime(3)
+
+  @@index([status, inquiryType])
+  @@map("website_inquiries")
+}
+
+model WebsiteMembershipApplication {
+  id                     String    @id @default(uuid()) @db.Char(36)
+  applicationNumber      String    @unique @db.VarChar(50)
+  fullName               String    @db.VarChar(200)
+  phone                  String    @db.VarChar(50)
+  email                  String?   @db.VarChar(200)
+  nationalIdNumber       String?   @db.VarChar(100)
+  city                   String    @db.VarChar(100)
+  preferredBranch        String?   @db.VarChar(150)
+  occupation             String?   @db.VarChar(150)
+  monthlyIncome          Decimal?  @db.Decimal(15, 2)
+  productInterest        String?   @db.VarChar(100)
+  initialDepositEstimate Decimal?  @db.Decimal(15, 2)
+  status                 String    @default("received") @db.VarChar(50) // received, reviewing, contacted, approved, rejected
+  rejectionReason        String?   @db.Text
+  notes                  String?   @db.Text
+  reviewedById           String?   @db.Char(36)
+  createdAt              DateTime  @default(now()) @db.DateTime(3)
+  updatedAt              DateTime  @default(now()) @updatedAt @db.DateTime(3)
+
+  @@index([status, phone])
+  @@index([applicationNumber])
+  @@map("website_membership_applications")
+}
+
+model WebsiteFaq {
+  id         String   @id @default(uuid()) @db.Char(36)
+  question   String   @db.VarChar(500)
+  answer     String   @db.Text
+  category   String   @default("general") @db.VarChar(100) // general, membership, loans, savings, dividends, digital
+  orderIndex Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now()) @db.DateTime(3)
+  updatedAt  DateTime @default(now()) @updatedAt @db.DateTime(3)
+
+  @@index([isActive, category])
+  @@map("website_faqs")
+}
+
+model WebsiteBranch {
+  id             String   @id @default(uuid()) @db.Char(36)
+  name           String   @db.VarChar(200)
+  city           String   @db.VarChar(100)
+  address        String   @db.VarChar(300)
+  phone          String   @db.VarChar(100)
+  email          String?  @db.VarChar(150)
+  managerName    String?  @db.VarChar(150)
+  operatingHours String   @default("Mon - Fri: 8:00 AM - 5:00 PM, Sat: 8:00 AM - 12:30 PM") @db.VarChar(255)
+  isHeadOffice   Boolean  @default(false)
+  latitude       Float?
+  longitude      Float?
+  orderIndex     Int      @default(0)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now()) @db.DateTime(3)
+
+  @@index([isActive, city])
+  @@map("website_branches")
+}
+
+model WebsitePublication {
+  id          String   @id @default(uuid()) @db.Char(36)
+  title       String   @db.VarChar(255)
+  category    String   @default("annual_report") @db.VarChar(100) // annual_report, financial_statement, bylaw, brochure, policy
+  description String?  @db.Text
+  fileUrl     String   @db.VarChar(500)
+  fileSize    String?  @db.VarChar(50)
+  year        Int?
+  downloads   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.DateTime(3)
+
+  @@index([isActive, category])
+  @@map("website_publications")
+}
+
+model WebsiteSetting {
+  id        String   @id @default(uuid()) @db.Char(36)
+  key       String   @unique @db.VarChar(100)
+  value     String   @db.Text
+  group     String   @default("general") @db.VarChar(50) // general, contact, social, statistics, rates
+  updatedAt DateTime @default(now()) @updatedAt @db.DateTime(3)
+
+  @@index([group])
+  @@map("website_settings")
+}
+
+
+

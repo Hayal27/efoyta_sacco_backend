@@ -1,0 +1,92 @@
+name: Deploy backend to cPanel
+
+# Put this file in your repo at: .github/workflows/deploy.yml
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SSH_HOST: efoytasacco.com
+      SSH_USER: efoytane
+      APP_DIR: ${{ vars.APP_DIR }}          # repository variable, e.g. /home/efoytane/corebanking
+      PUPPETEER_SKIP_DOWNLOAD: "true"       # don't download Chromium (huge)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check settings
+        run: |
+          test -n "$APP_DIR" || { echo "Set the APP_DIR repository variable first"; exit 1; }
+
+      - name: Install dependencies (for building)
+        run: npm install --no-audit --no-fund
+
+      - name: Build workspace packages (only if they define a build script)
+        run: npm run build --workspaces --if-present
+
+      - name: Build backend
+        run: npm run build
+
+      - name: Assemble deploy folder
+        run: |
+          mkdir deploy
+          cp -r dist deploy/dist
+          cp -r prisma deploy/prisma
+          cp server.js deploy/server.js 2>/dev/null || true
+          cp app.js deploy/app.js 2>/dev/null || true
+          node -e "
+            const p = require('./package.json');
+            delete p.workspaces; delete p.devDependencies; delete p.jest;
+            p.scripts = { start: 'node dist/server.js' };
+            for (const k of Object.keys(p.dependencies)) {
+              if (k.startsWith('@coop/')) delete p.dependencies[k];
+            }
+            require('fs').writeFileSync('deploy/package.json', JSON.stringify(p, null, 2));
+          "
+          cd deploy
+          npm install --omit=dev --no-audit --no-fund
+          PRISMA_V=$(node -p "require('@prisma/client/package.json').version")
+          npx --yes prisma@$PRISMA_V generate --schema prisma/schema.prisma
+
+      - name: Set up SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload to server
+        run: |
+          SSH="ssh -i $HOME/.ssh/id_ed25519"
+          DEST="$SSH_USER@$SSH_HOST:$APP_DIR"
+          rsync -az -e "$SSH" --delete deploy/dist/ "$DEST/dist/"
+          rsync -az -e "$SSH" --delete deploy/prisma/ "$DEST/prisma/"
+          rsync -az -e "$SSH" deploy/package.json "$DEST/package.json"
+          rsync -az -e "$SSH" deploy/server.js "$DEST/server.js" 2>/dev/null || true
+          rsync -az -e "$SSH" deploy/app.js "$DEST/app.js" 2>/dev/null || true
+          rsync -az -e "$SSH" --delete deploy/node_modules/ "$DEST/node_modules/"
+
+      - name: Run Database Migrations
+        run: |
+          ssh -i "$HOME/.ssh/id_ed25519" "$SSH_USER@$SSH_HOST" \
+            "source \$(find /home/$SSH_USER/nodevenv -name activate | head -n 1) 2>/dev/null && cd '$APP_DIR' && npx prisma migrate deploy" || true
+
+      - name: Restart app
+        run: |
+          ssh -i "$HOME/.ssh/id_ed25519" "$SSH_USER@$SSH_HOST" \
+            "mkdir -p '$APP_DIR/tmp' && touch '$APP_DIR/tmp/restart.txt'"
